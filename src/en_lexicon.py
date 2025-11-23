@@ -47,6 +47,7 @@ LEXICON = {
     "cars":     ("N", "PL"),
 
     # Pronouns (solo sujeto)
+    "i":   ("PRON", "PL"),
     "he":   ("PRON", "SG"),
     "she":  ("PRON", "SG"),
     "it":   ("PRON", "SG"),
@@ -72,8 +73,17 @@ LEXICON = {
     "open":   ("V", "PL"),
     "closes": ("V", "SG"),
     "close":  ("V", "PL"),
-}
 
+        # Adjectives
+    "big":    ("ADJ", "ANY"),
+    "small":  ("ADJ", "ANY"),
+    "red":    ("ADJ", "ANY"),
+    "blue":   ("ADJ", "ANY"),
+    "young":  ("ADJ", "ANY"),
+    "old":    ("ADJ", "ANY"),
+    "happy":  ("ADJ", "ANY"),
+    "sad":    ("ADJ", "ANY"),
+}
 
 def tokenize_sentence(sentence: str):
     """

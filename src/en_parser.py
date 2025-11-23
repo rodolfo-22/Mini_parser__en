@@ -1,14 +1,15 @@
 # src/en_parser.py
 #
 # Gramática:
-#   S      -> NP VP
-#   NP     -> DET N | PRON
-#   VP     -> V OptObj
-#   OptObj -> NP | ε
+#   S        -> NP VP
+#   NP       -> PRON | DET AdjList N
+#   AdjList  -> ADJ AdjList | ε
+#   VP       -> V OptObj
+#   OptObj   -> NP | ε
 #
 # Validaciones extra:
-#   - Concordancia sujeto–verbo en número (SG / PL).
-#   - Concordancia determinante–sustantivo en número.
+#   - Concordancia sujeto–verbo en número (SG / PL)
+#   - Concordancia determinante–sustantivo en número
 
 from dataclasses import dataclass
 from src.en_lexicon import Token, tokenize_sentence, LexicalError
@@ -22,12 +23,10 @@ class ParseError(Exception):
 class ParseResult:
     ok: bool
     message: str
-
-
 class RDEnParser:
     def __init__(self, tokens):
         self.tokens = tokens
-        self.i = 0  # índice del token actual
+        self.i = 0 # índice del token actual
 
     # --------- utilidades ---------
 
@@ -73,25 +72,33 @@ class RDEnParser:
         self.VP(expected_subj_num=subj_num)
         return subj_num
 
+    # --------- NP y sus partes ---------
+
     def NP(self) -> str:
         """
-        NP -> DET N | PRON
+        NP -> PRON | DET AdjList N
         Devuelve el número del sintagma nominal.
         """
         tok = self.current()
         if tok is None:
             raise ParseError("Expected a noun phrase (NP), but reached end of sentence.")
 
+        # Caso PRON
         if tok.cat == "PRON":
             pron = self.accept("PRON")
-            # número del pronombre (he=SG, they=PL, etc.)
             return pron.num
 
+        # Caso DET AdjList N
         if tok.cat == "DET":
             det = self.accept("DET")
+
+            # Lista de adjetivos opcionales
+            self.AdjList()
+
+            # Sustantivo obligatorio
             noun = self.accept("N")
 
-            # Concordancia DET–N en número
+            # Concordancia DET–N
             if det.num != "ANY" and det.num != noun.num:
                 raise ParseError(
                     f"Determiner–noun agreement error: determiner '{det.word}' "
@@ -104,6 +111,18 @@ class RDEnParser:
             f"Expected a determiner or pronoun to start NP, "
             f"found {tok.cat} ('{tok.word}') at position {tok.pos}."
         )
+
+    def AdjList(self):
+        """
+        AdjList -> ADJ AdjList | ε
+        Consume cero o más adjetivos.
+        """
+        tok = self.current()
+        while tok is not None and tok.cat == "ADJ":
+            self.accept("ADJ")
+            tok = self.current()
+
+    # --------- VP ---------
 
     def VP(self, expected_subj_num: str):
         """
@@ -126,7 +145,6 @@ class RDEnParser:
         # Si no hay NP, producción ε (intransitivo)
 
 # --------- Función de alto nivel ---------
-
 
 def analyze_en_sentence(sentence: str) -> ParseResult:
     try:
