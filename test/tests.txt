@@ -1,0 +1,23 @@
+# VALID
+boys run
+the boy eats
+the boys eat
+family eats
+water moves
+students work in the school
+the young students play in the room
+the girls like the apples
+boys give the book to the girls
+the cars can move in the city
+
+# INVALID
+book eats
+the boys eats
+family eat
+the apples eats
+this students work
+boys can eats
+boys can
+the boy in the city
+boys like to eat
+the water in

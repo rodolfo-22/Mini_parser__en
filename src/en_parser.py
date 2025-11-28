@@ -1,4 +1,5 @@
 # Gramática:
+# VERIFICAR ESTA GRAMATICA, NO ESTOY SEGURO SI ES LA ULTIMA ACTUALIZADA
 #   S        -> NP VP
 #
 #   NP       -> PRON | DET AdjList N PPList | N PPList
