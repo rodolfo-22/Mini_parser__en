@@ -1,19 +1,28 @@
-# src/en_parser.py
-#
 # Gramática:
 #   S        -> NP VP
-#   NP       -> PRON | DET AdjList N
-#   AdjList  -> ADJ AdjList | ε
-#   VP       -> V OptObj
-#   OptObj   -> NP | ε
 #
-# Validaciones extra:
-#   - Concordancia sujeto–verbo en número (SG / PL)
-#   - Concordancia determinante–sustantivo en número
+#   NP       -> PRON | DET AdjList N PPList | N PPList
+#
+#       AdjList  -> ADJ AdjList | ε
+#       PPList   -> PP PPList | ε
+#       PP       -> PREP NP
+#
+#   VP       -> AuxList V VPBody
+#       AuxList  -> AUX AuxList | ε
+#
+#       VPBody   -> NP PPList | PPList | ε
+#
+#   - Solo cuando Noun ∈ {PL, UNC, COLL} pueden aparecer sin Determinante como NP.
+#   - La verificación de sujeto–verbo se hace con SG/PL.
+#   - Después del verbo se permiten:
+#       V
+#       V NP
+#       V PP*
+#       V NP PP*
+
 
 from dataclasses import dataclass
 from src.en_lexicon import Token, tokenize_sentence, LexicalError
-
 
 class ParseError(Exception):
     pass
@@ -23,12 +32,12 @@ class ParseError(Exception):
 class ParseResult:
     ok: bool
     message: str
+
+
 class RDEnParser:
     def __init__(self, tokens):
         self.tokens = tokens
-        self.i = 0 # índice del token actual
-
-    # --------- utilidades ---------
+        self.i = 0
 
     def current(self):
         return self.tokens[self.i] if self.i < len(self.tokens) else None
@@ -49,11 +58,37 @@ class RDEnParser:
         self.i += 1
         return tok
 
-    # --------- reglas de la gramática ---------
+    # Funciones para manejo de sustantivos
+    def noun_agreement(self, noun: Token) -> str:
+        """
+        Indica si el nombre es Singular o Plural a partir del tipo de sustantivo:
 
+          PL              -> "PL"
+          SGC, UNC, COLL  -> "SG"
+        """
+        if noun.num == "PL":
+            return "PL"
+        # SGC Singular contable, UNC Incontable, COLL Colectivo
+        return "SG"
+
+    def noun_allows_bare(self, noun: Token) -> bool:
+        """
+        Devuelve True si el sustantivo puede aparecer sin determinante como NP.
+
+        Permitimos:
+          - Plurales:    PL        (Dogs bark.)
+          - Incontables: UNC       (Water flows.)
+          - Colectivos:  COLL      (Family goes...)
+        No permitimos:
+          - Singulares contables: SGC  (Book is on table) -> error
+        """
+        return noun.num in ("PL", "UNC", "COLL")
+
+    
+    # Reglas de la Gramática
     def parse(self) -> ParseResult:
         try:
-            subj_num = self.S()  # símbolo inicial
+            subj_num = self.S()  # Símbolo Inicial
             if self.current() is not None:
                 tok = self.current()
                 raise ParseError(
@@ -76,8 +111,10 @@ class RDEnParser:
 
     def NP(self) -> str:
         """
-        NP -> PRON | DET AdjList N
-        Devuelve el número del sintagma nominal.
+        NP -> PRON
+            | DET AdjList N PPList
+            | N PPList     (solo si N lo permite)
+        Devuelve el número (SG/PL) del sintagma nominal para concordancia.
         """
         tok = self.current()
         if tok is None:
@@ -88,7 +125,7 @@ class RDEnParser:
             pron = self.accept("PRON")
             return pron.num
 
-        # Caso DET AdjList N
+        # Caso DET AdjList N PPList
         if tok.cat == "DET":
             det = self.accept("DET")
 
@@ -97,18 +134,37 @@ class RDEnParser:
 
             # Sustantivo obligatorio
             noun = self.accept("N")
+            noun_num = self.noun_agreement(noun)
 
-            # Concordancia DET–N
-            if det.num != "ANY" and det.num != noun.num:
+            # Concordancia DET–N (en número lógico SG/PL)
+            if det.num != "ANY" and det.num != noun_num:
                 raise ParseError(
                     f"Determiner–noun agreement error: determiner '{det.word}' "
                     f"({det.num}) with noun '{noun.word}' ({noun.num}) at position {noun.pos}."
                 )
 
-            return noun.num
+            # Sintagmas preposicionales opcionales que modifican al nombre
+            self.PPList()
+
+            return noun_num
+
+        # Caso N PPList (bare noun como sujeto/objeto)
+        if tok.cat == "N":
+            noun = self.accept("N")
+
+            if not self.noun_allows_bare(noun):
+                raise ParseError(
+                    f"Singular count noun '{noun.word}' cannot appear bare as NP "
+                    f"(position {noun.pos}); a determiner is required."
+                )
+
+            # Modificadores preposicionales opcionales
+            self.PPList()
+
+            return self.noun_agreement(noun)
 
         raise ParseError(
-            f"Expected a determiner or pronoun to start NP, "
+            f"Expected a determiner, pronoun or noun to start NP, "
             f"found {tok.cat} ('{tok.word}') at position {tok.pos}."
         )
 
@@ -122,13 +178,45 @@ class RDEnParser:
             self.accept("ADJ")
             tok = self.current()
 
-    # --------- VP ---------
+    def PPList(self):
+        """
+        PPList -> PP PPList | ε
+        Consume cero o más sintagmas preposicionales.
+        """
+        tok = self.current()
+        while tok is not None and tok.cat == "PREP":
+            self.PP()
+            tok = self.current()
+
+    def PP(self):
+        """
+        PP -> PREP NP
+        Sintagma preposicional: preposición + sintagma nominal.
+        """
+        self.accept("PREP")
+        self.NP()
+
+    # --------- VP y auxiliares ---------
+
+    def AuxList(self):
+        """
+        AuxList -> AUX AuxList | ε
+        Consume cero o más auxiliares (can, may, must).
+        """
+        tok = self.current()
+        while tok is not None and tok.cat == "AUX":
+            self.accept("AUX")
+            tok = self.current()
 
     def VP(self, expected_subj_num: str):
         """
-        VP -> V OptObj
-        Verifica concordancia sujeto–verbo en número.
+        VP -> AuxList V VPBody
+        Verifica concordancia sujeto–verbo en número usando el V principal.
         """
+        # Auxiliares modales opcionales: can, may, must, ...
+        self.AuxList()
+
+        # Verbo principal
         verb = self.accept("V")
 
         # Concordancia sujeto–verbo
@@ -138,14 +226,31 @@ class RDEnParser:
                 f"but verb '{verb.word}' is {verb.num} (position {verb.pos})."
             )
 
-        # Objeto opcional
+        # Cuerpo del VP: objeto directo opcional + PP(s) opcional(es)
+        self.VPBody()
+
+    def VPBody(self):
+        """
+        VPBody -> NP PPList
+               | PPList
+               | ε
+
+        Implementado como:
+          - Si viene NP: consumir NP y luego posible lista de PP.
+          - Si no viene NP: consumir solo lista de PP (o nada).
+        """
         tok = self.current()
-        if tok is not None and tok.cat in ("DET", "PRON"):
+        if tok is not None and tok.cat in ("DET", "PRON", "N"):
+            # Objeto directo (NP)
             self.NP()
-        # Si no hay NP, producción ε (intransitivo)
+            # PPs como complemento del verbo (incluye IO tipo "to the boy")
+            self.PPList()
+        else:
+            # Sin NP, pero pueden venir PPs (run in the park, talk to the students)
+            self.PPList()
 
-# --------- Función de alto nivel ---------
 
+# Función análisis de la oración
 def analyze_en_sentence(sentence: str) -> ParseResult:
     try:
         tokens = tokenize_sentence(sentence)
