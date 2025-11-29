@@ -1,54 +1,82 @@
-# Gramática:
-# VERIFICAR ESTA GRAMATICA, NO ESTOY SEGURO SI ES LA ULTIMA ACTUALIZADA
-#   S        -> NP VP
-#
-#   NP       -> PRON | DET AdjList N PPList | N PPList
-#
-#       AdjList  -> ADJ AdjList | ε
-#       PPList   -> PP PPList | ε
-#       PP       -> PREP NP
-#
-#   VP       -> AuxList V VPBody
-#       AuxList  -> AUX AuxList | ε
-#
-#       VPBody   -> NP PPList | PPList | ε
-#
-#   - Solo cuando Noun ∈ {PL, UNC, COLL} pueden aparecer sin Determinante como NP.
-#   - La verificación de sujeto–verbo se hace con SG/PL.
-#   - Después del verbo se permiten:
-#       V
-#       V NP
-#       V PP*
-#       V NP PP*
+# ==============================================================================
+# ESPECIFICACIÓN DE LA GRAMÁTICA (Recursive Descent Parser)
 
+# Símbolo Inicial (Lógica de control):
+#   Program  -> S ( COMMA S )*
 
-from dataclasses import dataclass
+#   NOTA DE DISEÑO:
+#   Esta regla permite que el parser procese una lista indefinida (infinita) de 
+#   oraciones separadas por comas. La coma cumple una doble función:
+#     1. Sintáctica: Separador gramatical entre oraciones.
+#     2. Recuperación: Elemento de sincronización para el 'Modo Pánico'.
+
+# Producciones Sintácticas:
+#   1. S        -> NP VP
+
+#   2. NP       -> PRON
+#                | DET AdjList N PPList
+#                | N PPList                 (Restricción: N debe permitir 'Bare Noun')
+
+#   3. AdjList  -> ADJ AdjList | ε
+#
+#   4. PPList   -> PP PPList | ε
+
+#   5. PP       -> PREP NP
+
+#   6. VP       -> AuxList V VPBody
+
+#   7. AuxList  -> AUX AuxList | ε
+
+#   8. VPBody   -> NP PPList
+#                | PPList
+#                | ε
+
+# Reglas Semánticas y de Validación:
+#   - Concordancia de Número: Sujeto (NP) con Verbo (VP).
+#   - Concordancia de Número: Determinante (DET) con Sustantivo (N).
+#   - Restricción 'Bare Noun': Sustantivos singulares contables (SGC) requieren determinante.
+#     Sustantivos Plurales (PL), Incontables (UNC) o Colectivos (COLL) pueden ir solos.
+
+# Estrategia de Manejo de Errores:
+#   - Modo Pánico (Panic Mode Recovery).
+#   - Token de Sincronización: COMMA (,).
+# ==============================================================================
+
+from dataclasses import dataclass, field
+from typing import List
 from src.en_lexicon import Token, tokenize_sentence, LexicalError
 
 class ParseError(Exception):
+    """Excepción lanzada cuando ocurre un error de sintaxis o concordancia."""
     pass
-
 
 @dataclass
 class ParseResult:
+    """Clase para encapsular el resultado del análisis sintáctico."""
     ok: bool
-    message: str
-
+    messages: List[str] = field(default_factory=list)
 
 class RDEnParser:
-    def __init__(self, tokens):
+    def __init__(self, tokens: List[Token]):
         self.tokens = tokens
-        self.i = 0
+        self.i = 0  # Puntero al token actual
+
+    # MÉTODOS DE UTILIDAD
 
     def current(self):
+        """Devuelve el token actual o None si se ha llegado al final."""
         return self.tokens[self.i] if self.i < len(self.tokens) else None
 
     def accept(self, expected_cat: str) -> Token:
+        """
+        Verifica si el token actual coincide con la categoría esperada.
+        Si coincide, avanza el puntero y devuelve el token.
+        Si no, lanza ParseError.
+        """
         tok = self.current()
         if tok is None:
             raise ParseError(
-                f"Expected {expected_cat}, but reached end of sentence. "
-                f"Probably missing a {expected_cat} at the end."
+                f"Unexpected end of input. Expected category: {expected_cat}."
             )
 
         if tok.cat != expected_cat:
@@ -59,204 +87,197 @@ class RDEnParser:
         self.i += 1
         return tok
 
-    # Funciones para manejo de sustantivos
-    def noun_agreement(self, noun: Token) -> str:
-        """
-        Indica si el nombre es Singular o Plural a partir del tipo de sustantivo:
-
-          PL              -> "PL"
-          SGC, UNC, COLL  -> "SG"
-        """
-        if noun.num == "PL":
-            return "PL"
-        # SGC Singular contable, UNC Incontable, COLL Colectivo
-        return "SG"
-
-    def noun_allows_bare(self, noun: Token) -> bool:
-        """
-        Devuelve True si el sustantivo puede aparecer sin determinante como NP.
-
-        Permitimos:
-          - Plurales:    PL        (Dogs bark.)
-          - Incontables: UNC       (Water flows.)
-          - Colectivos:  COLL      (Family goes...)
-        No permitimos:
-          - Singulares contables: SGC  (Book is on table) -> error
-        """
-        return noun.num in ("PL", "UNC", "COLL")
-
+    # LÓGICA DE RECUPERACIÓN DE ERRORES (MODO PÁNICO)
     
-    # Reglas de la Gramática
-    def parse(self) -> ParseResult:
-        try:
-            subj_num = self.S()  # Símbolo Inicial
-            if self.current() is not None:
-                tok = self.current()
-                raise ParseError(
-                    f"Extra input after a valid sentence: '{tok.word}' at position {tok.pos}."
-                )
-            return ParseResult(True, "Valid English sentence according to the grammar.")
-        except (ParseError, LexicalError) as e:
-            return ParseResult(False, str(e))
+    def parse_panic_mode(self) -> ParseResult:
+        """
+        Método principal que orquesta el análisis.
+        Implementa un bucle para procesar múltiples oraciones separadas por comas.
+        Si ocurre un error, registra el mensaje y sincroniza hasta la siguiente coma.
+        """
+        errors = []
+        parsed_any = False
+
+        while self.current() is not None:
+            try:
+                # Verificación de sintaxis: Coma no esperada al inicio de una oración
+                if self.current().cat == "COMMA":
+                    raise ParseError(f"Unexpected comma found at start of sentence (position {self.current().pos}).")
+
+                # Intentar analizar una oración completa (S)
+                self.S() 
+                parsed_any = True
+                
+                # Verificación de delimitador: Esperamos una coma o el fin del archivo
+                curr = self.current()
+                if curr is not None:
+                    if curr.cat == "COMMA":
+                        self.accept("COMMA")  # Consumir el separador y continuar
+                    else:
+                        raise ParseError(f"Expected ',' or End of Input, found '{curr.word}'")
+            
+            except ParseError as e:
+                # REPORTE: Agregar el error a la lista
+                errors.append(str(e))
+                # RECUPERACIÓN: Invocar rutina de sincronización
+                self.synchronize_panic()
+
+        # Generación del resultado final
+        if errors:
+            return ParseResult(False, errors)
+        elif not parsed_any:
+            return ParseResult(False, ["No input provided."])
+        
+        return ParseResult(True, ["Parsing successful."])
+
+    def synchronize_panic(self):
+        """
+        Rutina de Sincronización.
+        Descarta tokens consecutivamente hasta encontrar el token de sincronización (COMMA)
+        o alcanzar el final del flujo de entrada.
+        """
+        while self.current() is not None:
+            token = self.current()
+            if token.cat == "COMMA":
+                self.i += 1  # Consumir la coma para reiniciar el análisis en estado limpio
+                return
+            self.i += 1  # Descartar token actual
+
+    # REGLAS DE ANÁLISIS SINTÁCTICO (RECURSIVE DESCENT)
 
     def S(self) -> str:
         """
-        S -> NP VP
-        Devuelve el número del sujeto (SG/PL).
+        Producción: S -> NP VP
+        Retorna el número del sujeto (SG/PL) para validaciones futuras.
         """
         subj_num = self.NP()
         self.VP(expected_subj_num=subj_num)
         return subj_num
 
-    # --------- NP y sus partes ---------
-
     def NP(self) -> str:
         """
-        NP -> PRON
-            | DET AdjList N PPList
-            | N PPList     (solo si N lo permite)
-        Devuelve el número (SG/PL) del sintagma nominal para concordancia.
+        Producciones NP:
+          1. NP -> PRON
+          2. NP -> DET AdjList N PPList
+          3. NP -> N PPList (Bare Noun)
         """
         tok = self.current()
         if tok is None:
-            raise ParseError("Expected a noun phrase (NP), but reached end of sentence.")
+            raise ParseError("Expected NP, found end of sentence.")
 
-        # Caso PRON
+        # 1. Caso Pronombre
         if tok.cat == "PRON":
             pron = self.accept("PRON")
             return pron.num
 
-        # Caso DET AdjList N PPList
+        # 2. Caso Determinante + Sustantivo
         if tok.cat == "DET":
             det = self.accept("DET")
-
-            # Lista de adjetivos opcionales
             self.AdjList()
-
-            # Sustantivo obligatorio
             noun = self.accept("N")
             noun_num = self.noun_agreement(noun)
 
-            # Concordancia DET–N (en número lógico SG/PL)
+            # Validación: Concordancia Determinante-Sustantivo
             if det.num != "ANY" and det.num != noun_num:
                 raise ParseError(
-                    f"Determiner–noun agreement error: determiner '{det.word}' "
-                    f"({det.num}) with noun '{noun.word}' ({noun.num}) at position {noun.pos}."
+                    f"Agreement Error: Determiner '{det.word}' ({det.num}) mismatch with noun '{noun.word}' ({noun.num})."
                 )
 
-            # Sintagmas preposicionales opcionales que modifican al nombre
             self.PPList()
-
             return noun_num
 
-        # Caso N PPList (bare noun como sujeto/objeto)
+        # 3. Caso Sustantivo sin Determinante (Bare Noun)
         if tok.cat == "N":
             noun = self.accept("N")
-
+            # Validación: Solo ciertos tipos de sustantivos pueden ir sin determinante
             if not self.noun_allows_bare(noun):
                 raise ParseError(
-                    f"Singular count noun '{noun.word}' cannot appear bare as NP "
-                    f"(position {noun.pos}); a determiner is required."
+                    f"Grammar Error: Countable singular noun '{noun.word}' cannot appear without a determiner."
                 )
-
-            # Modificadores preposicionales opcionales
             self.PPList()
-
             return self.noun_agreement(noun)
 
-        raise ParseError(
-            f"Expected a determiner, pronoun or noun to start NP, "
-            f"found {tok.cat} ('{tok.word}') at position {tok.pos}."
-        )
+        raise ParseError(f"Expected DET, PRON or N to start NP, found {tok.cat} ('{tok.word}').")
 
     def AdjList(self):
-        """
-        AdjList -> ADJ AdjList | ε
-        Consume cero o más adjetivos.
-        """
-        tok = self.current()
-        while tok is not None and tok.cat == "ADJ":
+        """Producción: AdjList -> ADJ AdjList | ε"""
+        while self.current() is not None and self.current().cat == "ADJ":
             self.accept("ADJ")
-            tok = self.current()
 
     def PPList(self):
-        """
-        PPList -> PP PPList | ε
-        Consume cero o más sintagmas preposicionales.
-        """
-        tok = self.current()
-        while tok is not None and tok.cat == "PREP":
+        """Producción: PPList -> PP PPList | ε"""
+        while self.current() is not None and self.current().cat == "PREP":
             self.PP()
-            tok = self.current()
 
     def PP(self):
-        """
-        PP -> PREP NP
-        Sintagma preposicional: preposición + sintagma nominal.
-        """
+        """Producción: PP -> PREP NP"""
         self.accept("PREP")
         self.NP()
 
-    # --------- VP y auxiliares ---------
-
     def AuxList(self):
-        """
-        AuxList -> AUX AuxList | ε
-        Consume cero o más auxiliares (can, may, must).
-        """
-        tok = self.current()
-        while tok is not None and tok.cat == "AUX":
+        """Producción: AuxList -> AUX AuxList | ε"""
+        while self.current() is not None and self.current().cat == "AUX":
             self.accept("AUX")
-            tok = self.current()
 
     def VP(self, expected_subj_num: str):
         """
-        VP -> AuxList V VPBody
-        Verifica concordancia sujeto–verbo en número usando el V principal.
+        Producción: VP -> AuxList V VPBody
+        Realiza la validación de concordancia Sujeto-Verbo.
         """
-        # Auxiliares modales opcionales: can, may, must, ...
         self.AuxList()
-
-        # Verbo principal
         verb = self.accept("V")
 
-        # Concordancia sujeto–verbo
+        # Validación: Concordancia Sujeto-Verbo
         if verb.num != expected_subj_num:
             raise ParseError(
-                f"Subject–verb agreement error: subject is {expected_subj_num}, "
-                f"but verb '{verb.word}' is {verb.num} (position {verb.pos})."
+                f"Subject–Verb Agreement Error: Subject is {expected_subj_num}, "
+                f"but verb '{verb.word}' is {verb.num}."
             )
 
-        # Cuerpo del VP: objeto directo opcional + PP(s) opcional(es)
         self.VPBody()
 
     def VPBody(self):
         """
-        VPBody -> NP PPList
-               | PPList
-               | ε
-
-        Implementado como:
-          - Si viene NP: consumir NP y luego posible lista de PP.
-          - Si no viene NP: consumir solo lista de PP (o nada).
+        Producción: VPBody -> NP PPList | PPList | ε
+        Maneja objetos directos y complementos preposicionales.
         """
         tok = self.current()
+        # Verificamos si el siguiente token inicia un NP (Objeto Directo)
         if tok is not None and tok.cat in ("DET", "PRON", "N"):
-            # Objeto directo (NP)
-            self.NP()
-            # PPs como complemento del verbo (incluye IO tipo "to the boy")
-            self.PPList()
+            self.NP()      # Consumir Objeto Directo
+            self.PPList()  # Consumir complementos circunstanciales
         else:
-            # Sin NP, pero pueden venir PPs (run in the park, talk to the students)
+            # Si no hay objeto directo, solo buscamos complementos
             self.PPList()
 
+    # HELPERS DE VALIDACIÓN SEMÁNTICA
 
-# Función análisis de la oración
+    def noun_agreement(self, noun: Token) -> str:
+        """Determina el número gramatical efectivo del sustantivo."""
+        if noun.num == "PL": return "PL"
+        return "SG"
+
+    def noun_allows_bare(self, noun: Token) -> bool:
+        """
+        Verifica si el sustantivo puede aparecer sin determinante.
+        Permitido para: Plurales (PL), Incontables (UNC) y Colectivos (COLL).
+        """
+        return noun.num in ("PL", "UNC", "COLL")
+
+# PUNTO DE ENTRADA PÚBLICO
+
 def analyze_en_sentence(sentence: str) -> ParseResult:
+    """
+    Función principal para invocar el parser.
+    1. Tokeniza la entrada.
+    2. Inicializa el parser.
+    3. Ejecuta el análisis con recuperación de errores.
+    """
     try:
         tokens = tokenize_sentence(sentence)
     except LexicalError as e:
-        return ParseResult(False, f"Lexical error: {e}")
+        # Los errores léxicos detienen el proceso inmediatamente.
+        return ParseResult(False, [f"Lexical Error: {e}"])
 
     parser = RDEnParser(tokens)
-    return parser.parse()
+    return parser.parse_panic_mode()
